@@ -1,14 +1,20 @@
 import socket
 import time
 import random
+import hashlib
 
-# Configurações
-HOST = 'localhost'  # Ou use o IP do servidor
+
+HOST = 'localhost'  
 PORT = 12345
 WINDOW_SIZE = 5
 
+def calculate_checksum(data):
+    """Calcula a soma de verificação do pacote usando MD5."""
+    return hashlib.md5(data.encode('utf-8')).hexdigest()
+
 def send_packet(conn, seq_num, payload):
-    data = f"{seq_num}:{payload}".encode('utf-8')
+    checksum = calculate_checksum(payload)
+    data = f"{seq_num}:{checksum}:{payload}".encode('utf-8')
     conn.sendall(data)
 
 def client():
@@ -16,9 +22,11 @@ def client():
         s.connect((HOST, PORT))
 
         for i in range(10):
-            # Envia pacotes
-            send_packet(s, i, f"Pacote {i}")
-            # Simula erro de integridade
+
+            payload = f"Pacote {i}"
+            send_packet(s, i, payload)
+
+            
             if random.choice([True, False]):
                 s.sendall(b'erro')
 

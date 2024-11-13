@@ -2,8 +2,9 @@ import socket
 import random
 import time
 import logging
+import hashlib
 
-# Configuração de logging
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Configurações
@@ -14,20 +15,24 @@ BUFFER_SIZE = 1024
 INTEGRITY_CHECK_PASS_RATE = 0.8
 
 class PacketError(Exception):
-    """Erro base para problemas relacionados a pacotes."""
+    
     pass
 
 class IntegrityError(PacketError):
-    """Erro levantado quando a verificação de integridade falha."""
+    
     pass
 
 class OutOfOrderError(PacketError):
-    """Erro levantado quando um pacote é recebido fora de ordem."""
+    
     pass
 
-def verify_integrity(data):
-    """Simula verificação de integridade do pacote."""
-    return random.random() < INTEGRITY_CHECK_PASS_RATE
+def calculate_checksum(data):
+    """Calcula a soma de verificação do pacote usando MD5."""
+    return hashlib.md5(data.encode('utf-8')).hexdigest()
+
+def verify_integrity(received_checksum, payload):
+    """Verifica se a soma de verificação do payload corresponde ao checksum recebido."""
+    return calculate_checksum(payload) == received_checksum
 
 def process_packet(seq_num, payload, expected_seq_num, buffer):
     """Processa um pacote recebido."""
@@ -43,7 +48,7 @@ def process_packet(seq_num, payload, expected_seq_num, buffer):
         return False, expected_seq_num
 
 def handle_client_connection(conn, addr):
-    """Lida com a conexão de um cliente."""
+    
     logging.info(f"Nova conexão de {addr}")
     expected_seq_num = 0
     buffer = {}
@@ -59,17 +64,19 @@ def handle_client_connection(conn, addr):
                 if data == b'erro':
                     raise IntegrityError("Erro de integridade simulado recebido")
 
-                seq_num, payload = data.decode('utf-8').split(':', 1)
+                # Desempacota o dado recebido
+                seq_num, received_checksum, payload = data.decode('utf-8').split(':', 2)
                 seq_num = int(seq_num)
 
-                if not verify_integrity(payload):
+                # Verifica a integridade dos dados
+                if not verify_integrity(received_checksum, payload):
                     raise IntegrityError(f"Falha na verificação de integridade do pacote {seq_num}")
 
                 processed, expected_seq_num = process_packet(seq_num, payload, expected_seq_num, buffer)
                 
                 if processed:
                     conn.sendall(f"ACK:{seq_num}".encode('utf-8'))
-                    # Processa pacotes em buffer
+                    
                     while expected_seq_num in buffer:
                         logging.info(f"Processando do buffer: pacote {expected_seq_num}")
                         del buffer[expected_seq_num]
@@ -82,7 +89,7 @@ def handle_client_connection(conn, addr):
                 conn.sendall(f"NACK:{expected_seq_num}".encode('utf-8'))
             except IntegrityError as e:
                 logging.warning(str(e))
-                conn.sendall(f"NACK:{expected_seq_num}".encode('utf-8'))
+                conn.sendall(f"NACK:{seq_num}".encode('utf-8'))
             except OutOfOrderError as e:
                 logging.info(str(e))
                 conn.sendall(f"ACK:{expected_seq_num-1}".encode('utf-8'))
@@ -96,7 +103,7 @@ def handle_client_connection(conn, addr):
         logging.info(f"Conexão com {addr} encerrada")
 
 def server():
-    """Função principal do servidor."""
+    
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((HOST, PORT))
         s.listen()
