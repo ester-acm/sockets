@@ -3,10 +3,8 @@ import time
 import random
 import hashlib
 
-
 HOST = 'localhost'  
 PORT = 12345
-WINDOW_SIZE = 5
 
 def calculate_checksum(data):
     """Calcula a soma de verificação do pacote usando MD5."""
@@ -21,12 +19,19 @@ def client():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HOST, PORT))
 
-        for i in range(10):
+        seq_num = 0  
 
-            payload = f"Pacote {i}"
-            send_packet(s, i, payload)
+        while True:
+            # Solicita ao usuário para enviar um pacote ou sair
+            user_input = input("Pressione Enter para enviar o próximo pacote ou 'sair' para encerrar: ")
+            if user_input.lower() == 'sair':
+                print("Encerrando conexão...")
+                break
 
-            
+            payload = f"Pacote {seq_num}"
+            send_packet(s, seq_num, payload)
+
+            # Simula envio de erro de integridade aleatório
             if random.choice([True, False]):
                 s.sendall(b'erro')
 
@@ -37,6 +42,9 @@ def client():
             elif "NACK" in response:
                 print(f"Recebido NACK para pacote {response.split(':')[1]}")
             
+            #Incrementa o número de sequência para o próximo pacote
+            seq_num += 1
+
             time.sleep(1)
 
 if __name__ == "__main__":
