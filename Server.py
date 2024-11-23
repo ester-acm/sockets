@@ -14,6 +14,9 @@ BUFFER_SIZE = 1024
 INTEGRITY_CHECK_PASS_RATE = 0.8
 TIMEOUT = 5
 
+
+LOST_ACK_PACKETS = {3, 7}  
+
 class PacketError(Exception):
     pass
 
@@ -78,6 +81,11 @@ def handle_client_connection(conn, addr):
                 processed, expected_seq_num = process_packet(seq_num, payload, expected_seq_num, buffer)
                 
                 if processed:
+                    
+                    if seq_num in LOST_ACK_PACKETS:
+                        logging.warning(f"Simulando perda de ACK para o pacote {seq_num}")
+                        continue 
+
                     conn.sendall(f"ACK:{seq_num}".encode('utf-8'))
                     
                     if seq_num in timers:
