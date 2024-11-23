@@ -1,4 +1,4 @@
-#Sockets
+# Sockets
 
 
 Este projeto demonstra o uso de sockets em Python para comunicação entre cliente e servidor em uma rede. Ele simula a troca de pacotes com controle de integridade, usando técnicas como soma de verificação (checksum), controle de sequência e reconhecimento de pacotes.
