@@ -1,9 +1,7 @@
 import socket
 import time
-import random
 import hashlib
 import threading
-from collections import deque
 
 HOST = 'localhost'
 PORT = 12345
@@ -35,6 +33,11 @@ class PacketSender:
         with self.lock:
             while len(self.buffer) < self.window_size and self.next_seq_num < len(self.packets):
                 payload = self.packets[self.next_seq_num]
+
+                
+                if self.next_seq_num in self.errored_packets:
+                    payload = f"{payload}_erro"
+
                 self.buffer[self.next_seq_num] = payload
                 send_packet(self.conn, self.next_seq_num, payload)
                 print(f"Enviado pacote {self.next_seq_num}")
@@ -85,12 +88,15 @@ class PacketSender:
             self.window_size = max(self.window_size // 2, MIN_WINDOW_SIZE)
         print(f"Janela ajustada para {self.window_size}")
 
-    def send_packets(self, packets):
+    def send_packets(self, packets, batch_size=1, errored_packets=None):
         self.packets = packets
+        self.batch_size = batch_size
+        self.errored_packets = set(errored_packets or [])
+        
         self.send_window()
 
         while self.base < len(packets):
-            time.sleep(0.1)  # Pequena pausa para evitar uso excessivo de CPU
+            time.sleep(0.1)  
 
         print("Todos os pacotes foram enviados e confirmados.")
 
@@ -98,13 +104,15 @@ def client():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HOST, PORT))
         
-        packet_sender = PacketSender(s)
-        ack_thread = threading.Thread(target=packet_sender.receive_ack)
+        sender = PacketSender(s)
+        ack_thread = threading.Thread(target=sender.receive_ack)
         ack_thread.daemon = True
         ack_thread.start()
 
-        packets = [f"Pacote {i}" for i in range(20)]  # Criando 20 pacotes para teste
-        packet_sender.send_packets(packets)
+        packets = [f"Pacote {i}" for i in range(20)]  
+        errored_packets = [2, 4]  
+        batch_size = 5  
+        sender.send_packets(packets, batch_size=batch_size, errored_packets=errored_packets)
 
 if __name__ == "__main__":
     client()
