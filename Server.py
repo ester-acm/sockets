@@ -56,27 +56,20 @@ def handle_client_connection(conn, addr):
                 logging.warning(f"Erro de integridade no pacote {seq_num}")
                 response = f"NACK:{seq_num}"
             else:
-                if seq_num == expected_seq_num:
-                    logging.info(f"Pacote {seq_num} processado em ordem")
-                    expected_seq_num += 1
-                    rwnd = max(0, rwnd - 1)
-
+                if seq_num >= expected_seq_num:
+                    logging.info(f"Pacote {seq_num} processado")
+                    buffer[seq_num] = payload
                     while expected_seq_num in buffer:
-                        logging.info(f"Processando do buffer: pacote {expected_seq_num}")
                         del buffer[expected_seq_num]
                         expected_seq_num += 1
                         rwnd = max(0, rwnd - 1)
-                elif seq_num > expected_seq_num:
-                    logging.info(f"Pacote {seq_num} fora de ordem, armazenando no buffer")
-                    buffer[seq_num] = payload
                 else:
                     logging.warning(f"Pacote {seq_num} duplicado")
 
                 response = f"ACK:{seq_num};RWND:{rwnd}"
 
-            corrupted_response = simulate_loss_or_corruption(response)
-            if corrupted_response:
-                conn.sendall(corrupted_response)
+            logging.info(f"Enviando resposta: {response}")
+            conn.sendall(response.encode('utf-8'))
 
             rwnd = min(WINDOW_SIZE, rwnd + 1)
 

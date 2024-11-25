@@ -9,6 +9,7 @@ INITIAL_WINDOW_SIZE = 4
 MAX_WINDOW_SIZE = 10
 MIN_WINDOW_SIZE = 1
 TIMEOUT = 5
+MAX_RETRIES = 5  # Número máximo de retransmissões por pacote
 
 def calculate_checksum(data):
     return hashlib.md5(data.encode('utf-8')).hexdigest()
@@ -18,6 +19,7 @@ def send_packet(conn, seq_num, payload):
         checksum = calculate_checksum(payload)
         data = f"{seq_num}:{checksum}:{payload}".encode('utf-8')
         conn.sendall(data)
+        print(f"Pacote {seq_num} enviado: {payload}")
     except Exception as e:
         print(f"Erro ao enviar pacote {seq_num}: {e}")
 
@@ -35,20 +37,7 @@ class PacketSender:
         self.packets = []
         self.errored_packets = set()
         self.running = True
-
-    def send_window(self):
-        with self.lock:
-            while len(self.buffer) < self.window_size and self.next_seq_num < len(self.packets):
-                payload = self.packets[self.next_seq_num]
-                if self.next_seq_num in self.errored_packets:
-                    payload = f"{payload}_erro"
-                self.buffer[self.next_seq_num] = payload
-                send_packet(self.conn, self.next_seq_num, payload)
-                print(f"Enviado pacote {self.next_seq_num}")
-                self.start_timer(self.next_seq_num)
-                self.next_seq_num += 1
-                if self.single_mode:
-                    break
+        self.retries = {}
 
     def start_timer(self, seq_num):
         self.timers[seq_num] = threading.Timer(TIMEOUT, self.retransmit, args=[seq_num])
@@ -57,28 +46,42 @@ class PacketSender:
     def retransmit(self, seq_num):
         with self.lock:
             if seq_num in self.buffer:
-                print(f"Timeout para pacote {seq_num}. Retransmitindo...")
-                send_packet(self.conn, seq_num, self.buffer[seq_num])
-                self.start_timer(seq_num)
-                self.adjust_window_size(decrease=True)
+                self.retries[seq_num] = self.retries.get(seq_num, 0) + 1
+                if self.retries[seq_num] > MAX_RETRIES:
+                    print(f"Desistindo do pacote {seq_num} após {MAX_RETRIES} tentativas")
+                    del self.buffer[seq_num]
+                    if seq_num in self.timers:
+                        self.timers[seq_num].cancel()
+                        del self.timers[seq_num]
+                    self.base = seq_num + 1
+                    self.ack_received.set()
+                else:
+                    print(f"Timeout para pacote {seq_num}. Retransmitindo... (Tentativa {self.retries[seq_num]})")
+                    send_packet(self.conn, seq_num, self.buffer[seq_num])
+                    self.start_timer(seq_num)
+                    self.adjust_window_size(decrease=True)
 
     def receive_ack(self):
+        buffer = ""
         while self.running:
             try:
-                response = self.conn.recv(1024).decode('utf-8')
-                if not response:
+                data = self.conn.recv(1024).decode('utf-8')
+                if not data:
                     print("Conexão encerrada pelo servidor.")
                     break
-                if "ACK" in response:
-                    parts = response.split(';')
-                    ack_num = int(parts[0].split(':')[1])
-                    rwnd = int(parts[1].split(':')[1])
-                    print(f"Recebido ACK para pacote {ack_num}, RWND: {rwnd}")
-                    self.process_ack(ack_num)
-                elif "NACK" in response:
-                    nack_num = int(response.split(':')[1])
-                    print(f"Recebido NACK para pacote {nack_num}")
-                    self.retransmit(nack_num)
+                buffer += data
+                while '\n' in buffer:
+                    response, buffer = buffer.split('\n', 1)
+                    if "NACK" in response:
+                        nack_num = int(response.split(':')[1])
+                        print(f"Recebido NACK para pacote {nack_num}")
+                        self.retransmit(nack_num)
+                    elif "ACK" in response:
+                        parts = response.split(';')
+                        ack_num = int(parts[0].split(':')[1])
+                        rwnd = int(parts[1].split(':')[1])
+                        print(f"Recebido ACK para pacote {ack_num}, RWND: {rwnd}")
+                        self.process_ack(ack_num)
             except Exception as e:
                 print(f"Erro ao receber ACK/NACK: {e}")
                 break
@@ -92,8 +95,11 @@ class PacketSender:
                     if seq_num in self.timers:
                         self.timers[seq_num].cancel()
                         del self.timers[seq_num]
+                    if seq_num in self.retries:
+                        del self.retries[seq_num]
                 self.base = ack_num + 1
                 self.adjust_window_size(increase=True)
+                print(f"ACK processado para pacote {ack_num}")
                 self.ack_received.set()
                 self.send_window()
 
@@ -103,6 +109,19 @@ class PacketSender:
         elif decrease:
             self.window_size = max(self.window_size // 2, MIN_WINDOW_SIZE)
         print(f"Janela ajustada para {self.window_size}")
+
+    def send_window(self):
+        with self.lock:
+            while len(self.buffer) < self.window_size and self.next_seq_num < len(self.packets):
+                payload = self.packets[self.next_seq_num]
+                if self.next_seq_num in self.errored_packets:
+                    payload = f"{payload}_erro"
+                self.buffer[self.next_seq_num] = payload
+                send_packet(self.conn, self.next_seq_num, payload)
+                self.start_timer(self.next_seq_num)
+                self.next_seq_num += 1
+                if self.single_mode:
+                    break
 
     def send_packets(self, packets, errored_packets=None):
         self.packets = packets
