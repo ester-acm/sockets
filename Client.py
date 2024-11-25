@@ -24,7 +24,7 @@ def send_packet(conn, seq_num, payload):
 class PacketSender:
     def __init__(self, conn, single_mode):
         self.conn = conn
-        self.single_mode = single_mode  
+        self.single_mode = single_mode
         self.window_size = INITIAL_WINDOW_SIZE
         self.base = 0
         self.next_seq_num = 0
@@ -32,34 +32,23 @@ class PacketSender:
         self.ack_received = threading.Event()
         self.lock = threading.Lock()
         self.timers = {}
+        self.packets = []
+        self.errored_packets = set()
+        self.running = True
 
     def send_window(self):
         with self.lock:
-            if self.single_mode:  
-                if len(self.buffer) < 1 and self.next_seq_num < len(self.packets):
-                    payload = self.packets[self.next_seq_num]
-
-                    if self.next_seq_num in self.errored_packets:
-                        payload = f"{payload}_erro"
-
-                    self.buffer[self.next_seq_num] = payload
-                    send_packet(self.conn, self.next_seq_num, payload)
-                    print(f"Enviado pacote único {self.next_seq_num}")
-                    self.start_timer(self.next_seq_num)
-                    self.next_seq_num += 1
-
-            else:  
-                while len(self.buffer) < self.window_size and self.next_seq_num < len(self.packets):
-                    payload = self.packets[self.next_seq_num]
-
-                    if self.next_seq_num in self.errored_packets:
-                        payload = f"{payload}_erro"
-
-                    self.buffer[self.next_seq_num] = payload
-                    send_packet(self.conn, self.next_seq_num, payload)
-                    print(f"Enviado pacote {self.next_seq_num}")
-                    self.start_timer(self.next_seq_num)
-                    self.next_seq_num += 1
+            while len(self.buffer) < self.window_size and self.next_seq_num < len(self.packets):
+                payload = self.packets[self.next_seq_num]
+                if self.next_seq_num in self.errored_packets:
+                    payload = f"{payload}_erro"
+                self.buffer[self.next_seq_num] = payload
+                send_packet(self.conn, self.next_seq_num, payload)
+                print(f"Enviado pacote {self.next_seq_num}")
+                self.start_timer(self.next_seq_num)
+                self.next_seq_num += 1
+                if self.single_mode:
+                    break
 
     def start_timer(self, seq_num):
         self.timers[seq_num] = threading.Timer(TIMEOUT, self.retransmit, args=[seq_num])
@@ -74,15 +63,17 @@ class PacketSender:
                 self.adjust_window_size(decrease=True)
 
     def receive_ack(self):
-        while self.base < len(self.packets): 
+        while self.running:
             try:
                 response = self.conn.recv(1024).decode('utf-8')
                 if not response:
                     print("Conexão encerrada pelo servidor.")
                     break
                 if "ACK" in response:
-                    ack_num = int(response.split(':')[1])
-                    print(f"Recebido ACK para pacote {ack_num}")
+                    parts = response.split(';')
+                    ack_num = int(parts[0].split(':')[1])
+                    rwnd = int(parts[1].split(':')[1])
+                    print(f"Recebido ACK para pacote {ack_num}, RWND: {rwnd}")
                     self.process_ack(ack_num)
                 elif "NACK" in response:
                     nack_num = int(response.split(':')[1])
@@ -103,7 +94,7 @@ class PacketSender:
                         del self.timers[seq_num]
                 self.base = ack_num + 1
                 self.adjust_window_size(increase=True)
-                self.ack_received.set()  
+                self.ack_received.set()
                 self.send_window()
 
     def adjust_window_size(self, increase=False, decrease=False):
@@ -117,19 +108,24 @@ class PacketSender:
         self.packets = packets
         self.errored_packets = set(errored_packets or [])
         
+        ack_thread = threading.Thread(target=self.receive_ack)
+        ack_thread.daemon = True
+        ack_thread.start()
+
         self.send_window()
 
         while self.base < len(packets):
-            self.ack_received.wait(TIMEOUT)  
+            self.ack_received.wait(TIMEOUT)
             self.ack_received.clear()
 
+        self.running = False
+        ack_thread.join(timeout=1)
         print("Todos os pacotes foram enviados e confirmados.")
 
 def client():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
             s.connect((HOST, PORT))
-            
             
             print("Escolha o modo de envio:")
             print("1 - Envio único")
@@ -138,12 +134,8 @@ def client():
             single_mode = choice == "1"
 
             sender = PacketSender(s, single_mode)
-            ack_thread = threading.Thread(target=sender.receive_ack)
-            ack_thread.daemon = True
-            ack_thread.start()
-
-            packets = [f"Pacote {i}" for i in range(20)]  
-            errored_packets = [2, 4]  
+            packets = [f"Pacote {i}" for i in range(20)]
+            errored_packets = [2, 4]
             sender.send_packets(packets, errored_packets=errored_packets)
         except Exception as e:
             print(f"Erro ao conectar ao servidor: {e}")

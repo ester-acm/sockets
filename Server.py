@@ -9,8 +9,8 @@ PORT = 12345
 WINDOW_SIZE = 5
 BUFFER_SIZE = 1024
 TIMEOUT = 5
-LOSS_PROBABILITY = 0.1  
-CORRUPT_PROBABILITY = 0.1  
+LOSS_PROBABILITY = 0.1
+CORRUPT_PROBABILITY = 0.1
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -30,19 +30,11 @@ def simulate_loss_or_corruption(response):
         return corrupted_response.encode('utf-8')
     return response.encode('utf-8')
 
-def negotiate_protocol(conn):
-    conn.sendall("NEGOTIATE:Select_GBN".encode('utf-8'))
-    protocol = conn.recv(BUFFER_SIZE).decode('utf-8')
-    logging.info(f"Protocolo negociado com cliente: {protocol}")
-    return protocol
-
 def handle_client_connection(conn, addr):
     logging.info(f"Nova conexão de {addr}")
     expected_seq_num = 0
     buffer = {}
     rwnd = WINDOW_SIZE
-
-    protocol = negotiate_protocol(conn)
 
     try:
         while True:
@@ -51,47 +43,43 @@ def handle_client_connection(conn, addr):
                 logging.info("Cliente desconectou normalmente")
                 break
 
-            seq_num, received_checksum, payload = data.decode('utf-8').split(':', 2)
-            seq_num = int(seq_num)
+            try:
+                seq_num, received_checksum, payload = data.decode('utf-8').split(':', 2)
+                seq_num = int(seq_num)
+            except ValueError:
+                logging.warning(f"Formato de pacote inválido: {data}")
+                continue
+
+            logging.info(f"Pacote {seq_num} recebido: {payload}")
 
             if not verify_integrity(received_checksum, payload):
                 logging.warning(f"Erro de integridade no pacote {seq_num}")
                 response = f"NACK:{seq_num}"
-                corrupted_response = simulate_loss_or_corruption(response)
-                if corrupted_response:
-                    conn.sendall(corrupted_response)
-                continue
-
-            if seq_num == expected_seq_num:
-                logging.info(f"Pacote {seq_num} aceito: {payload}")
-                expected_seq_num += 1
-                rwnd = max(0, rwnd - 1)  
-                response = f"ACK:{seq_num};RWND:{rwnd}"
-                corrupted_response = simulate_loss_or_corruption(response)
-                if corrupted_response:
-                    conn.sendall(corrupted_response)
-
-                while expected_seq_num in buffer:
-                    logging.info(f"Processando do buffer: pacote {expected_seq_num}")
-                    del buffer[expected_seq_num]
+            else:
+                if seq_num == expected_seq_num:
+                    logging.info(f"Pacote {seq_num} processado em ordem")
                     expected_seq_num += 1
                     rwnd = max(0, rwnd - 1)
 
-            elif seq_num > expected_seq_num:
-                logging.info(f"Pacote {seq_num} fora de ordem, armazenando no buffer")
-                buffer[seq_num] = payload
-                response = f"ACK:{expected_seq_num - 1};RWND:{rwnd}"
-                corrupted_response = simulate_loss_or_corruption(response)
-                if corrupted_response:
-                    conn.sendall(corrupted_response)
-            else:
-                logging.warning(f"Pacote {seq_num} duplicado ignorado")
-                response = f"ACK:{seq_num};RWND:{rwnd}"
-                corrupted_response = simulate_loss_or_corruption(response)
-                if corrupted_response:
-                    conn.sendall(corrupted_response)
+                    while expected_seq_num in buffer:
+                        logging.info(f"Processando do buffer: pacote {expected_seq_num}")
+                        del buffer[expected_seq_num]
+                        expected_seq_num += 1
+                        rwnd = max(0, rwnd - 1)
+                elif seq_num > expected_seq_num:
+                    logging.info(f"Pacote {seq_num} fora de ordem, armazenando no buffer")
+                    buffer[seq_num] = payload
+                else:
+                    logging.warning(f"Pacote {seq_num} duplicado")
 
-            rwnd = min(WINDOW_SIZE, rwnd + 1)  
+                response = f"ACK:{seq_num};RWND:{rwnd}"
+
+            corrupted_response = simulate_loss_or_corruption(response)
+            if corrupted_response:
+                conn.sendall(corrupted_response)
+
+            rwnd = min(WINDOW_SIZE, rwnd + 1)
+
     except Exception as e:
         logging.error(f"Erro inesperado: {e}")
     finally:
