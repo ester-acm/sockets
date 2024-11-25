@@ -14,9 +14,12 @@ def calculate_checksum(data):
     return hashlib.md5(data.encode('utf-8')).hexdigest()
 
 def send_packet(conn, seq_num, payload):
-    checksum = calculate_checksum(payload)
-    data = f"{seq_num}:{checksum}:{payload}".encode('utf-8')
-    conn.sendall(data)
+    try:
+        checksum = calculate_checksum(payload)
+        data = f"{seq_num}:{checksum}:{payload}".encode('utf-8')
+        conn.sendall(data)
+    except Exception as e:
+        print(f"Erro ao enviar pacote {seq_num}: {e}")
 
 class PacketSender:
     def __init__(self, conn):
@@ -31,18 +34,31 @@ class PacketSender:
 
     def send_window(self):
         with self.lock:
-            while len(self.buffer) < self.window_size and self.next_seq_num < len(self.packets):
-                payload = self.packets[self.next_seq_num]
+            if self.window_size == 1:  # Envio único
+                if len(self.buffer) < 1 and self.next_seq_num < len(self.packets):
+                    payload = self.packets[self.next_seq_num]
 
-                
-                if self.next_seq_num in self.errored_packets:
-                    payload = f"{payload}_erro"
+                    if self.next_seq_num in self.errored_packets:
+                        payload = f"{payload}_erro"
 
-                self.buffer[self.next_seq_num] = payload
-                send_packet(self.conn, self.next_seq_num, payload)
-                print(f"Enviado pacote {self.next_seq_num}")
-                self.start_timer(self.next_seq_num)
-                self.next_seq_num += 1
+                    self.buffer[self.next_seq_num] = payload
+                    send_packet(self.conn, self.next_seq_num, payload)
+                    print(f"Enviado pacote único {self.next_seq_num}")
+                    self.start_timer(self.next_seq_num)
+                    self.next_seq_num += 1
+
+            else:  # Envio em rajada
+                while len(self.buffer) < self.window_size and self.next_seq_num < len(self.packets):
+                    payload = self.packets[self.next_seq_num]
+
+                    if self.next_seq_num in self.errored_packets:
+                        payload = f"{payload}_erro"
+
+                    self.buffer[self.next_seq_num] = payload
+                    send_packet(self.conn, self.next_seq_num, payload)
+                    print(f"Enviado pacote {self.next_seq_num}")
+                    self.start_timer(self.next_seq_num)
+                    self.next_seq_num += 1
 
     def start_timer(self, seq_num):
         self.timers[seq_num] = threading.Timer(TIMEOUT, self.retransmit, args=[seq_num])
@@ -57,16 +73,23 @@ class PacketSender:
                 self.adjust_window_size(decrease=True)
 
     def receive_ack(self):
-        while True:
-            response = self.conn.recv(1024).decode('utf-8')
-            if "ACK" in response:
-                ack_num = int(response.split(':')[1])
-                print(f"Recebido ACK para pacote {ack_num}")
-                self.process_ack(ack_num)
-            elif "NACK" in response:
-                nack_num = int(response.split(':')[1])
-                print(f"Recebido NACK para pacote {nack_num}")
-                self.retransmit(nack_num)
+        while self.base < len(self.packets):  # Finaliza ao confirmar todos os pacotes
+            try:
+                response = self.conn.recv(1024).decode('utf-8')
+                if not response:
+                    print("Conexão encerrada pelo servidor.")
+                    break
+                if "ACK" in response:
+                    ack_num = int(response.split(':')[1])
+                    print(f"Recebido ACK para pacote {ack_num}")
+                    self.process_ack(ack_num)
+                elif "NACK" in response:
+                    nack_num = int(response.split(':')[1])
+                    print(f"Recebido NACK para pacote {nack_num}")
+                    self.retransmit(nack_num)
+            except Exception as e:
+                print(f"Erro ao receber ACK/NACK: {e}")
+                break
 
     def process_ack(self, ack_num):
         with self.lock:
@@ -79,6 +102,7 @@ class PacketSender:
                         del self.timers[seq_num]
                 self.base = ack_num + 1
                 self.adjust_window_size(increase=True)
+                self.ack_received.set()  # Sinaliza que um ACK foi recebido
                 self.send_window()
 
     def adjust_window_size(self, increase=False, decrease=False):
@@ -96,23 +120,25 @@ class PacketSender:
         self.send_window()
 
         while self.base < len(packets):
-            time.sleep(0.1)  
+            self.ack_received.wait(TIMEOUT)  # Espera por ACK ou tempo limite
+            self.ack_received.clear()
 
         print("Todos os pacotes foram enviados e confirmados.")
 
 def client():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.connect((HOST, PORT))
-        
-        sender = PacketSender(s)
-        ack_thread = threading.Thread(target=sender.receive_ack)
-        ack_thread.daemon = True
-        ack_thread.start()
+        try:
+            s.connect((HOST, PORT))
+            sender = PacketSender(s)
+            ack_thread = threading.Thread(target=sender.receive_ack)
+            ack_thread.daemon = True
+            ack_thread.start()
 
-        packets = [f"Pacote {i}" for i in range(20)]  
-        errored_packets = [2, 4]  
-        batch_size = 5  
-        sender.send_packets(packets, batch_size=batch_size, errored_packets=errored_packets)
+            packets = [f"Pacote {i}" for i in range(20)]  
+            errored_packets = [2, 4]  
+            sender.send_packets(packets, errored_packets=errored_packets)
+        except Exception as e:
+            print(f"Erro ao conectar ao servidor: {e}")
 
 if __name__ == "__main__":
     client()
