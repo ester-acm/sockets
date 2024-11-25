@@ -22,8 +22,9 @@ def send_packet(conn, seq_num, payload):
         print(f"Erro ao enviar pacote {seq_num}: {e}")
 
 class PacketSender:
-    def __init__(self, conn):
+    def __init__(self, conn, single_mode):
         self.conn = conn
+        self.single_mode = single_mode  
         self.window_size = INITIAL_WINDOW_SIZE
         self.base = 0
         self.next_seq_num = 0
@@ -34,7 +35,7 @@ class PacketSender:
 
     def send_window(self):
         with self.lock:
-            if self.window_size == 1:  # Envio único
+            if self.single_mode:  
                 if len(self.buffer) < 1 and self.next_seq_num < len(self.packets):
                     payload = self.packets[self.next_seq_num]
 
@@ -73,7 +74,7 @@ class PacketSender:
                 self.adjust_window_size(decrease=True)
 
     def receive_ack(self):
-        while self.base < len(self.packets):  # Finaliza ao confirmar todos os pacotes
+        while self.base < len(self.packets): 
             try:
                 response = self.conn.recv(1024).decode('utf-8')
                 if not response:
@@ -102,7 +103,7 @@ class PacketSender:
                         del self.timers[seq_num]
                 self.base = ack_num + 1
                 self.adjust_window_size(increase=True)
-                self.ack_received.set()  # Sinaliza que um ACK foi recebido
+                self.ack_received.set()  
                 self.send_window()
 
     def adjust_window_size(self, increase=False, decrease=False):
@@ -112,15 +113,14 @@ class PacketSender:
             self.window_size = max(self.window_size // 2, MIN_WINDOW_SIZE)
         print(f"Janela ajustada para {self.window_size}")
 
-    def send_packets(self, packets, batch_size=1, errored_packets=None):
+    def send_packets(self, packets, errored_packets=None):
         self.packets = packets
-        self.batch_size = batch_size
         self.errored_packets = set(errored_packets or [])
         
         self.send_window()
 
         while self.base < len(packets):
-            self.ack_received.wait(TIMEOUT)  # Espera por ACK ou tempo limite
+            self.ack_received.wait(TIMEOUT)  
             self.ack_received.clear()
 
         print("Todos os pacotes foram enviados e confirmados.")
@@ -129,7 +129,15 @@ def client():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
             s.connect((HOST, PORT))
-            sender = PacketSender(s)
+            
+            
+            print("Escolha o modo de envio:")
+            print("1 - Envio único")
+            print("2 - Envio em rajada")
+            choice = input("Digite sua escolha (1 ou 2): ").strip()
+            single_mode = choice == "1"
+
+            sender = PacketSender(s, single_mode)
             ack_thread = threading.Thread(target=sender.receive_ack)
             ack_thread.daemon = True
             ack_thread.start()
