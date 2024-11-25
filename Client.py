@@ -48,7 +48,7 @@ class PacketSender:
                     self.start_timer(self.next_seq_num)
                     self.next_seq_num += 1
 
-            else:  # Envio em rajada
+            else:  
                 while len(self.buffer) < self.window_size and self.next_seq_num < len(self.packets):
                     payload = self.packets[self.next_seq_num]
 
